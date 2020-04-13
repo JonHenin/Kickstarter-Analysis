@@ -1,0 +1,330 @@
+---
+title: "Final_Summary"
+author: "Jonathan Henin"
+date: "November 15, 2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+* I am interested in using the Kaggle dataset on Kickstarter projects.  I have always found the notion of crowdfunding interesting and I feel like it would be a fun dataset. 
+
+* Having an original idea for a product and bringing it to the market can be a challenge, especially the financing of the product.  Kickstarter is a crowd sourcing platform which shifts the control from banks to the people to decide what products are worthy of being funded.  However, even on Kickstarter a products success is not guaranteed.  If a person would go down the Kickstarter route, they would want to make sure they are doing everything they can to be successful.  Vice versa, as a backer you want to know the success rates of projects as well, but you also want to see which products once the goal is reached have the highest chance of being successful. 
+
+https://www.kaggle.com/kemical/kickstarter-projects
+
+```{r message=FALSE, warning=FALSE}
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(tidyr)
+library(Hmisc)
+library(lubridate)
+library(scales)
+library(tokenizers)
+library(stopwords)
+library(tidytext)
+library(stringr)
+library(foreign)
+library(caret)
+data(stop_words)
+options(scipen = 999)
+```
+
+* `ID`   internal kickstarter id
+* `name`  name of project - A project is a finite work with a clear goal that you would like to bring to life. Think albums, books, or films.
+* `category` category
+* `main_category` category of campaign
+* `currency` currency used to support
+* `deadline` deadline for crowdfunding
+* `goal` fundraising goal - The funding goal is the amount of money that a creator needs to complete their project.
+* `launched` date launched
+* `pledged` amount pledged by 'crowd'
+* `state` Current condition the project is in
+* `backers` number of backers
+* `country` country pledged from
+* `usd.pledged` amount of money pledged
+* `used_pledged_real` amount of money pledged cleaned
+* `usd_goal_real` amount in USD
+
+List of 7 research questions I aim to answer. 
+
+    1.	What are the most popular Kickstarter categories, and which have the highest rate of success / lowest? 
+    2.	Which Kickstarter campaigns have the most backers and the highest pledges per backer? 
+    3.	Which Kickstarter campaigns goes the most beyond their initial goal (stretch goals)? 
+    4.	What is the correlation between the amount of time given to meet a goal and its success? 
+    5.	Which Kickstarter campaigns have the lowest chance to fail after their goal is met? 
+    6.	Which words have the highest correlation with success and which ones have the lowest?
+    7.  Can we build a regression model to predict success?
+
+  
+```{r}
+ks_file <- 'ks-projects-201801.csv'
+
+ks_data <- read.csv(ks_file, header = T)
+```
+
+```{r}
+str(ks_data)
+Hmisc::describe(ks_data)
+```
+
+In general this looks good, a few things of note.  
+ * There are 3797 missing values in usd.pledged but according to the data source usd_pledged_real is already a cleaned up version of that column.
+ * `launched` and `deadline` need to be changed to dates.
+ * Add `days_to_goal` column calculating the difference between launched and deadline
+ * There are some strange values in launched with years in 1970, these are probably dummy values and I'll remove those records.
+ * Make name a character instead of a factor
+
+
+```{r}
+ks_data_cleaned <- ks_data
+
+ks_data_cleaned$launched <- ymd_hms(as.character(ks_data_cleaned$launched))
+ks_data_cleaned$deadline <- ymd(as.character(ks_data_cleaned$deadline))
+ks_data_cleaned$days_to_goal <- interval(ks_data_cleaned$launched, ks_data_cleaned$deadline) %/% days(1)
+ks_data_cleaned <- ks_data_cleaned[(ks_data_cleaned$launched >= '2000-01-01'),]
+ks_data_cleaned$name <- as.character(ks_data_cleaned$name)
+```
+
+## 1. What are the most popular Kickstarter categories, and which have the highest rate of success / lowest? 
+
+```{r}
+ggplot(ks_data_cleaned, aes(x = reorder(main_category, main_category, function(x)-length(x)), fill=main_category)) +
+  geom_bar() +
+  labs(x = 'Main Categories') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position='none')
+
+ggplot(ks_data_cleaned, aes(fill=state, x = reorder(main_category, main_category, function(x)-length(x)))) +
+  geom_bar(position='fill') +
+  labs(x = 'Main Categories') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+We can see that Film & Video, Music, and Publishing are the top 3 categories in terms of number of kickstarter projects.
+However, neither of those three are in the top 3 for highest chance of success.  That honor goes to Dance, Theater and Comics.  
+The worst 3 categories in terms of chance of success seem to be Journalism, Technology, and Crafts.
+
+## 2.	Which Kickstarter campaigns have the most backers and the highest pledges per backer? 
+
+```{r}
+ggplot(ks_data_cleaned, aes(x = reorder(main_category, -backers, sum), y = backers, fill=main_category)) +
+  geom_col() +
+  labs(x = 'Main Categories') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position='none')
+```
+
+```{r}
+ggplot(ks_data_cleaned, aes(x = reorder(main_category, -backers, sum), y = backers, color = main_category)) +
+  geom_jitter(alpha = .3) +
+  labs(x = 'Main Categories') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position='none')
+```
+
+```{r}
+ks_data_pledged <- ks_data_cleaned %>%
+  group_by(main_category) %>%
+  dplyr::summarise(pledged = sum(usd_pledged_real), backers = sum(backers))
+
+ggplot(ks_data_pledged, aes(x = reorder(main_category, -(pledged / backers), sum), y = (pledged / backers), fill=main_category)) +
+  geom_col() +
+  labs(x = 'Main Categories', y = 'Avg Pledge Amount') +
+  geom_text(aes(label = round((pledged / backers),2)), vjust = -0.5) +
+  ylim(0, 150) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position='none')
+```
+
+Games, Design and Technology have the most number of backers, but that doesn't necessarily mean they are willing to pay out more.
+As we can see, Games backers generally pledge a lot less than Design and Technology.  With Technology being the highest.
+This is interesting considering technology has one of the lowest chances of success.  This might because the pledge categories are higher for technology vs games but unfortunately we don't have the level of detail.
+
+
+## 3. Which Kickstarter campaign goes the most beyond their initial goal (stretch goals)?
+
+```{r}
+beyond_goal <- ks_data_cleaned %>%
+  filter(state %in% c('successful')) %>%
+  group_by(main_category) %>%
+  dplyr::summarise(count=n(), pledged = sum(usd_pledged_real), goal = sum(usd_goal_real)) %>%
+  mutate(avgover=(pledged-goal)/count)
+
+ggplot(beyond_goal, aes(x = reorder(main_category, -avgover, sum), y = avgover, fill=main_category)) +
+  geom_col() +
+  labs(x = 'Main Categories', y = 'Avg Amount Over Goal') +
+  ylim(0, 72000) +
+  geom_text(aes(label = round(avgover, 0), vjust = -0.5)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position='none')
+```
+
+Right in line with campaigns that have the most backers, it makes sense Technology, Design and Games raise a lot more money past their goals.  But what if we normalized it to look at percent over the goal.
+
+```{r}
+percent1 <- function(x, digits = 1, format = "f", ...) {
+  paste0(formatC(100 * x, format = format, digits = digits, ...), "%")
+}
+```
+
+```{r}
+ggplot(beyond_goal, aes(x = reorder(main_category, -(avgover / (goal / count)), sum), y = (avgover / (goal / count)), fill=main_category)) +
+  geom_col() +
+  labs(x = 'Main Categories', y = 'Avg % Over Goal') +
+  ylim(0, 3.3) +
+  geom_text(aes(label = percent1((avgover / (goal / count))), vjust = -0.5)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position='none')
+```
+
+We can see now that Design and Games overtake Technology as raising the most past their initial goal in terms of percentage over.
+
+## 4. What is the correlation between the amount of time given to meet a goal and its success? 
+
+Just a note that kickstarter sets a maximum amount of time for a goal to 60 days, and recommends a little less than 30 days, let's see if the data supports that recommendation.
+
+```{r}
+ks_days <- ks_data_cleaned %>%
+  filter(state %in% c('successful', 'failed'), days_to_goal <= 60) %>%
+  group_by(days_to_goal, state) %>%
+  dplyr::summarise(count=n()) %>%
+  mutate(pct=count/sum(count))
+
+ggplot(ks_days[ks_days$state=='successful',], aes(days_to_goal, pct)) + 
+  geom_point() + 
+  labs(x='Campaign Length (Days)', y='Success Rate (%)') + 
+  scale_x_continuous(breaks=c(0,10,20,30,40,50,60)) + 
+  geom_vline(xintercept=30, col='red') +
+  geom_smooth(method = 'lm', se = FALSE)
+```
+
+```{r, warning=FALSE, message=FALSE}
+ggplot(ks_data_cleaned[ks_data_cleaned$days_to_goal <= 60,], aes(x=days_to_goal)) + 
+  geom_histogram(col = 'white') +
+  scale_x_continuous(breaks=c(0,10,20,30,40,50,60))
+```
+
+
+It seems that the recommendation by kickstarter to have a duration less than 30 days is accurate as we can those to the left 30 days have a greater chance than those to the left and this is further reinforced by the trend line.  It also seems that a lot of people have listened to kickstarter and set their time to 29 days (most picked time), but the popularity of this number has brought this amount of to lower than any other day less than 30.  The optimal amount seems to be between 7 and 25 days.
+
+## 5. Which Kickstarter campaigns have the lowest chance to fail after their goal is met?
+
+```{r}
+ks_success <- ks_data_cleaned %>%
+  filter(state %in% c('successful', 'failed', 'canceled'), pledged >= goal) %>%
+  group_by(main_category, state) %>%
+  dplyr::summarise(count=n()) %>%
+  mutate(pct=count/sum(count)) %>%
+  arrange(desc(state), pct)
+
+ggplot(ks_success[ks_success$state != 'successful',], aes(x = reorder(main_category, pct, sum), y = pct, fill = state)) +
+  geom_col() +
+  labs(x = 'Main Categories') +
+  geom_text(aes(label = percent(pct), vjust = -0.5), size = 3) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+Of the projects that made their initial goal we can see that Technology, Design and Games lead in the highest chance to fail.  Frankly these percents seem a little low, so I wonder if Kickstarter accurately tracks projects that do not deliver what they promised.  However, at face value, Music, Theater and Comics have the best chance of success once they meet their goals.
+
+## 6. Which words have the highest correlation with success and which ones have the lowest? 
+
+```{r message=FALSE}
+ks_tokens <- ks_data_cleaned %>%
+  filter(state %in% c('successful', 'failed')) %>%
+  select(state, main_category, name) %>%
+  unnest_tokens(word, name) %>%
+  anti_join(stop_words)
+
+ks_tokens_success <- ks_tokens %>%
+  filter(state %in% c('successful')) %>%
+  dplyr::count(word, sort = TRUE)
+
+colnames(ks_tokens_success)[2] <- 'n_success'
+
+ks_tokens_failed <- ks_tokens %>%
+  filter(state %in% c('failed')) %>%
+  dplyr::count(word, sort = TRUE)
+
+colnames(ks_tokens_failed)[2] <- 'n_failed'
+
+freq <- ks_tokens_success %>% 
+  full_join(ks_tokens_failed) %>%
+  mutate(word = str_extract(word, "[a-z']+"),
+        n_total = n_success + n_failed, 
+        n_success_pct = n_success / n_total, 
+        n_success_wgt = n_success_pct * n_success,
+        n_lean = n_success - n_failed) %>%
+  filter(nchar(word) > 3) %>%
+  na.omit()
+```
+
+
+```{r}
+n_appear = 30 # Minimum number of times a word must show up to be counted
+n_num = 20 # Number of words on the graph
+
+top_n(freq[freq$n_total >= n_appear,], n=n_num, n_success_pct) %>% 
+  ggplot(., aes(x = reorder(word, -n_success_pct, sum), y = n_success_pct, fill = n_success_pct)) +
+  geom_col() +
+  labs(x = 'Words', y = 'Success Rate (%)') +
+  geom_text(aes(label = percent1(n_success_pct), vjust = -0.5), size = 3) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position='none')
+
+top_n(freq[freq$n_total >= n_appear,], n=-n_num, n_success_pct) %>% 
+  ggplot(., aes(x = reorder(word, n_success_pct, sum), y = n_success_pct, fill = n_success_pct)) +
+  geom_col() +
+  labs(x = 'Words', y = 'Success Rate (%)') +
+  scale_fill_gradient(low="darkred",high="tomato") +
+  geom_text(aes(label = percent1(n_success_pct), vjust = -0.5), size = 3) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position='none')
+```
+
+For the word frequency analysis, I tokenized all the names of kickstarter campaigns, unnested them and filtered out stop words.  However I also removed characters that were not letters and this left some words that were really short so I also decided the word had to be greater than 3 letters to count.  There were a lot of really high and low percentages for both categories that had very low usage rates so I made an arbitrary decision to filter the list to at least 30 total appearances.  Feel free to play around with this number, it produces some interesting results.
+
+## 7. Binomial Logistic Regression Model
+
+```{r, warning=FALSE}
+set.seed(25)
+
+ks_binary <- ks_data_cleaned %>%
+  filter(state %in% c('successful', 'failed')) %>%
+  mutate(state_binary = as.numeric(as.character(revalue(state, c('successful'=1,'failed'=0)))),
+         pledge = usd_pledged_real,
+         goal = usd_goal_real) %>%
+  select(state_binary, goal, days_to_goal)
+
+
+train_index = createDataPartition(ks_binary$state_binary, p = .8, list = F)
+train = ks_binary[train_index,]
+test = ks_binary[-train_index,]
+
+model <- glm(state_binary ~., family = "binomial", data = train)
+summary(model)
+
+pred <- predict(model, newdata = test, type = "response")
+pred.fit <- ifelse(pred > 0.5, 1, 0)
+misClasificError <- mean(pred.fit != test$state_binary)
+print(paste('Accuracy', percent(1 - misClasificError)))
+```
+
+## Conclusion
+
+I wanted to explore the data from two different perspectives, a backer and a creator, and see if we could pull out meaningful analysis for both.
+
+* From a backer perspective I want to see if I'm going to invest my money, which projects are the safest and it seems like Dance, Theater and Comics are the safest bet.
+* Not only did they have the highest success rates, but they also have the lowest cancellation rates.  While Technology, Design and Journalism seem to the be the riskiest.
+
+* From a creator standpoint we have a few things to help.  
+* First we see that Games, Design and Technology get the most backers and are also the most likely to go over the initial goal so stretch goals are very important
+* Though Games backers don't pay out as much as the other two categories so goals should be lower.
+* Even though those categories get a lot more backers, we've already seen that those are categories that don't see as much success.
+* The number of days to set our goal to see the best chance of success would be 10, 15 or 21 days.
+* We've also seen words that have done really well, such as Cthulhu and Calaveras. We've also seen words that haven't such as reminder, messaging and networking
+* Finally, we have a binomial logistic regression model which is showing 61% accuracy on predicting success just by using `goal` amount and `days_to_goal`, which is certainly better than chance.
+
+Limitations
+
+* Finally I want to end with some limitations to the analysis.  Some of the analysis were broken out by category and some weren't, however there is a finer level of detail and that is the sub_category group.
+* A fully flushed out EDA would explore all these nuanced differences because there might be a lot of variability within each category.  This is especially true of the most successful words as many of them are probably only successful in certain categories.
+*  A next step analysis would include dialing in what is the most successful goal amount per category as this is one of the controllable variables for success.  
